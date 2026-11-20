@@ -1,6 +1,7 @@
 package com.deva.ledgercalc.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -92,7 +93,7 @@ fun TapeList(
 }
 
 @Composable
-private fun TapeRowView(row: TapeRow, isEditing: Boolean) {
+private fun TapeRowView(row: TapeRow, isEditing: Boolean, onClick: () -> Unit) {
     val gutter = when {
         row.operator == null -> if (row.amount.signum() < 0) "−" else " "
         else -> row.operator.symbol
@@ -104,6 +105,7 @@ private fun TapeRowView(row: TapeRow, isEditing: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .then(
                 if (isEditing) {
                     Modifier.background(

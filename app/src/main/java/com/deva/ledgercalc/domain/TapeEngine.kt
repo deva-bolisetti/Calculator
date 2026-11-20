@@ -32,7 +32,19 @@ data class Tape(
     val error: String? = null,
     val nextId: Long = 1L,
     val sealed: Boolean = false,
-    val archived: List<TapeRow>? = null
+    val archived: List<TapeRow>? = null,
+    /**
+     * Session of [archived], so restoring a cleared tape puts it back under the history line it
+     * already had instead of re-recording the same rows as a new calculation.
+     */
+    val archivedSessionId: Long? = null,
+    /**
+     * Identity of the calculation currently on the tape. It survives row edits and undo, and only
+     * changes when a new tape is started, so a finished tape always maps to one history entry.
+     */
+    val sessionId: Long = 1L,
+    /** Monotonic counter behind [sessionId]; drawn from the clock so ids stay unique across runs. */
+    val nextSessionId: Long = 1L
 ) {
     /** Strictly top to bottom: every row acts on the total built by the rows above it. */
     val total: BigDecimal get() = evaluate(rows)
@@ -114,21 +126,23 @@ object TapeEngine {
     }
 
     fun operator(tape: Tape, operator: Operator): Tape {
-        val draft = tape.draft
+        // An operator right after "=" continues from the total, as on a desk calculator. Unsealing
+        // here is what stops the next digit from archiving the tape and starting over.
+        val start = if (tape.sealed) tape.copy(sealed = false) else tape
+        val draft = start.draft
         if (draft.isBracketOpen) {
             val text = appendOperatorToBracket(draft.bracketText.orEmpty(), operator)
-            return tape.copy(draft = draft.copy(bracketText = text), error = null)
+            return start.copy(draft = draft.copy(bracketText = text), error = null)
         }
         if (draft.isEditing) {
             // While correcting a row, an operator key changes that row's operator and finishes.
-            return replaceEditedRow(tape, operatorOverride = operator)
+            return replaceEditedRow(start, operatorOverride = operator)
         }
         if (!draft.hasAmount) {
             // Nothing typed yet: this just chooses the sign the next row will use.
-            if (tape.rows.isEmpty()) return tape.copy(draft = draft.copy(pendingOperator = operator), error = null)
-            return tape.copy(draft = draft.copy(pendingOperator = operator), error = null)
+            return start.copy(draft = draft.copy(pendingOperator = operator), error = null)
         }
-        val committed = commit(tape)
+        val committed = commit(start)
         if (committed.error != null) return committed
         return committed.copy(
             draft = committed.draft.copy(pendingOperator = operator),
@@ -167,15 +181,22 @@ object TapeEngine {
         val draft = tape.draft
         if (!draft.isBracketOpen) return tape
         val body = draft.bracketText.orEmpty()
-        if (body.count { it == '(' } > body.count { it == ')' }) {
-            return tape.copy(draft = draft.copy(bracketText = body + ")"), error = null)
+        val opened = body.count { it == '(' }
+        val closed = body.count { it == ')' }
+        if (opened == 0) return tape.copy(draft = draft.copy(bracketText = null), error = null)
+
+        // One press closes the innermost open bracket. Nested groups stay open until balanced.
+        val next = if (closed < opened) body + ")" else body
+        if (next.count { it == '(' } > next.count { it == ')' }) {
+            return tape.copy(draft = draft.copy(bracketText = next), error = null)
         }
-        val value = Expression.evaluate(body)
+
+        val value = Expression.evaluate(next)
             ?: return tape.copy(error = "Check the expression", draft = draft)
         return tape.copy(
             draft = draft.copy(
                 digits = value.stripTrailingZeros().toPlainString(),
-                expression = "$body)",
+                expression = next,
                 bracketText = null,
                 percent = false
             ),
@@ -193,8 +214,9 @@ object TapeEngine {
             return tape.copy(draft = draft.copy(bracketText = body.dropLast(1)), error = null)
         }
         if (draft.isEditing) {
+            // Stay in edit mode when the value empties: leaving it silently would turn the
+            // correction into a brand-new row appended to the tape.
             val digits = draft.digits.dropLast(1)
-            if (digits.isEmpty()) return cancelEdit(tape)
             return tape.copy(draft = draft.copy(digits = digits, expression = null, percent = false), error = null)
         }
         if (draft.digits.isEmpty()) return tape
@@ -212,13 +234,55 @@ object TapeEngine {
         }
         if (tape.rows.isEmpty()) {
             val archived = tape.archived ?: return tape
-            return tape.copy(rows = archived, archived = null, sealed = false, nextId = nextIdFor(archived))
+            // Reinstating rows restores their session too, so the entry they already own is
+            // updated rather than duplicated if they are sealed again.
+            return tape.copy(
+                rows = archived,
+                archived = null,
+                sealed = false,
+                nextId = nextIdFor(archived),
+                sessionId = tape.archivedSessionId ?: tape.sessionId,
+                archivedSessionId = null
+            )
         }
         return tape.copy(rows = tape.rows.dropLast(1), sealed = false, error = null)
     }
 
-    fun clear(tape: Tape): Tape =
-        Tape(archived = tape.rows.ifEmpty { tape.archived }, nextId = tape.nextId)
+    fun clear(tape: Tape): Tape {
+        val next = freshSession(tape)
+        return Tape(
+            archived = tape.rows.ifEmpty { tape.archived },
+            archivedSessionId = tape.sessionId.takeIf { tape.rows.isNotEmpty() } ?: tape.archivedSessionId,
+            nextId = tape.nextId,
+            sessionId = next,
+            nextSessionId = next + 1
+        )
+    }
+
+    /**
+     * Puts a finished tape from history back on the calculator.
+     *
+     * The session id travels with it, so continuing or correcting that calculation updates its
+     * existing history line instead of creating a second one for the same tape.
+     *
+     * A different tape that was on screen is kept in [Tape.archived], so undoing past the restored
+     * rows brings back whatever the user was looking at before they opened the entry.
+     */
+    fun open(tape: Tape, rows: List<TapeRow>, sessionId: Long): Tape {
+        if (rows.isEmpty()) return tape
+        val displaced = tape.rows.takeIf { it.isNotEmpty() && it != rows }
+        return tape.copy(
+            rows = rows,
+            draft = Draft(),
+            error = null,
+            sealed = false,
+            archived = displaced ?: tape.archived,
+            archivedSessionId = if (displaced != null) tape.sessionId else tape.archivedSessionId,
+            nextId = nextIdFor(rows),
+            sessionId = sessionId,
+            nextSessionId = maxOf(tape.nextSessionId, sessionId + 1L)
+        )
+    }
 
     /** Loads a committed row back into the entry line for correction. */
     fun editRow(tape: Tape, id: Long): Tape {
@@ -245,23 +309,28 @@ object TapeEngine {
         if (!draft.hasAmount) return tape
 
         val raw = Amounts.of(draft.digits) ?: return tape.copy(error = "That is not a number")
-        val operator = if (tape.rows.isEmpty()) null else (draft.pendingOperator ?: Operator.PLUS)
+        val startingRow = tape.rows.isEmpty()
+        val operator = if (startingRow) null else (draft.pendingOperator ?: Operator.PLUS)
 
-        val resolved = if (draft.percent) resolvePercent(raw, operator, tape.total) else raw
+        // A leading minus on an empty tape is the sign of the starting amount, not a row operator.
+        val signed = if (startingRow && draft.pendingOperator == Operator.MINUS) raw.negate() else raw
+        val resolved = if (draft.percent) resolvePercent(signed, operator, tape.total) else signed
+        // Quantise the stored row, not just its label: the rows must add up to the shown total.
+        val rounded = Amounts.round(resolved)
 
-        if (operator == Operator.DIVIDE && Amounts.isZero(resolved)) {
+        if (operator == Operator.DIVIDE && Amounts.isZero(rounded)) {
             return tape.copy(error = "Cannot divide by zero")
         }
 
         val row = TapeRow(
             id = tape.nextId,
             operator = operator,
-            amount = resolved,
+            amount = rounded,
             expression = draft.expression
         )
         return tape.copy(
             rows = tape.rows + row,
-            draft = Draft(pendingOperator = draft.pendingOperator),
+            draft = Draft(pendingOperator = if (startingRow) null else draft.pendingOperator),
             nextId = tape.nextId + 1,
             error = null
         )
@@ -278,12 +347,13 @@ object TapeEngine {
         val existing = tape.rows[index]
         val operator = operatorOverride ?: existing.operator
         val resolved = if (draft.percent) resolvePercent(raw, operator, Tape.evaluate(tape.rows.take(index))) else raw
-        if (operator == Operator.DIVIDE && Amounts.isZero(resolved)) {
+        val rounded = Amounts.round(resolved)
+        if (operator == Operator.DIVIDE && Amounts.isZero(rounded)) {
             return tape.copy(error = "Cannot divide by zero")
         }
 
         val rows = tape.rows.toMutableList()
-        rows[index] = existing.copy(operator = operator, amount = resolved, expression = draft.expression ?: existing.expression)
+        rows[index] = existing.copy(operator = operator, amount = rounded, expression = draft.expression ?: existing.expression)
         return tape.copy(
             rows = rows,
             draft = Draft(pendingOperator = tape.draft.pendingOperator),
@@ -306,7 +376,18 @@ object TapeEngine {
 
     private fun restartIfSealed(tape: Tape): Tape =
         if (tape.sealed) {
-            tape.copy(rows = emptyList(), archived = tape.rows, sealed = false, draft = Draft(), nextId = 1L)
+            // A new tape is a new calculation, so it gets its own history identity.
+            val next = freshSession(tape)
+            tape.copy(
+                rows = emptyList(),
+                archived = tape.rows,
+                archivedSessionId = tape.sessionId,
+                sealed = false,
+                draft = Draft(),
+                nextId = 1L,
+                sessionId = next,
+                nextSessionId = next + 1
+            )
         } else {
             tape
         }
@@ -337,4 +418,12 @@ object TapeEngine {
     }
 
     private fun nextIdFor(rows: List<TapeRow>): Long = (rows.maxOfOrNull { it.id } ?: 0L) + 1L
+
+    /**
+     * A session id no tape is using yet.
+     *
+     * The counter starts equal to the first session, so the very first tape would otherwise reuse
+     * the id of the tape it just archived; taking the larger of the two keeps them distinct.
+     */
+    private fun freshSession(tape: Tape): Long = maxOf(tape.nextSessionId, tape.sessionId + 1L)
 }

@@ -7,13 +7,16 @@ import java.math.RoundingMode
 /**
  * Formatting and arithmetic rules shared by the whole app.
  *
- * Amounts are always [BigDecimal]: 0.1 + 0.2 must read 0.3 on a tool whose entire purpose is
- * letting a person re-check the figures by eye. Division keeps 10 decimal places and the result
- * is stripped of trailing zeros so 10 / 3 reads 3.3333333333 while 10 / 2 reads 5.
+ * Amounts are always [BigDecimal]: 0.1 + 0.2 must read 0.30 on a tool whose entire purpose is
+ * letting a person re-check the figures by eye. Every committed row is rounded to [SCALE] places,
+ * so the rows a user reads always add up to the total a user reads.
  */
 object Amounts {
 
-    /** Division precision. Kept at 10 dp so a tape of quotients cannot drift visibly. */
+    /** Display and storage precision. Rows are quantised to this many decimal places. */
+    const val SCALE = 2
+
+    /** Division precision. Kept at 10 dp internally; the committed row is then rounded. */
     const val DIVISION_SCALE = 10
 
     private val MATH = MathContext(34, RoundingMode.HALF_UP)
@@ -33,31 +36,18 @@ object Amounts {
 
     /** @throws ArithmeticException when [b] is zero; callers must reject the row first. */
     fun divide(a: BigDecimal, b: BigDecimal): BigDecimal =
-        a.divide(b, DIVISION_SCALE, RoundingMode.HALF_UP).stripTrailingZeros()
+        a.divide(b, DIVISION_SCALE, RoundingMode.HALF_UP)
+
+    /** Rounds to [SCALE] places, half away from zero. Applied to every committed row. */
+    fun round(value: BigDecimal): BigDecimal = value.setScale(SCALE, RoundingMode.HALF_UP)
 
     fun isZero(value: BigDecimal): Boolean = value.signum() == 0
 
-    /** True when the value needs no fractional digits at all, e.g. 200 or -494. */
-    fun isWhole(value: BigDecimal): Boolean = value.stripTrailingZeros().scale() <= 0
-
     /**
-     * Display text: no exponent, no trailing fractional zeros, grouped in threes.
-     * 1000 -> "1,000", 0.50 -> "0.5", 494.000 -> "494".
+     * Display text: always exactly [SCALE] decimals, grouped in threes, no exponent.
+     * 1000 -> "1,000.00", 494 -> "494.00", 0.5 -> "0.50".
      */
-    fun format(value: BigDecimal): String {
-        val plain = value.stripTrailingZeros().toPlainString()
-        return group(plain)
-    }
-
-    /** [+1.0, +0.5, -0.25] -> "+1, +0.5, -0.25"; zero keeps its sign so a row is never blank. */
-    fun formatSigned(value: BigDecimal): String {
-        val text = format(value)
-        return when {
-            text.startsWith("-") -> text
-            text.startsWith("+") -> text
-            else -> "+$text"
-        }
-    }
+    fun format(value: BigDecimal): String = group(round(value).toPlainString())
 
     /** Inserts thousands separators into the integer part only. */
     private fun group(plain: String): String {

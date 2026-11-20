@@ -2,7 +2,6 @@ package com.deva.ledgercalc.data
 
 import com.deva.ledgercalc.domain.Amounts
 import com.deva.ledgercalc.domain.Tape
-import java.math.BigDecimal
 
 /**
  * Renders a tape as plain text, padded so the columns stay aligned in a plain-text context
@@ -36,7 +35,7 @@ object TapeText {
             if (expression != null) builder.append("   ").append(expression)
             builder.append('\n')
         }
-        builder.append('-'.repeat(width + 2)).append('\n')
+        builder.append("-".repeat(width + 2)).append('\n')
         builder.append("= ").append(total.padStart(width)).append('\n')
         return builder.toString()
     }

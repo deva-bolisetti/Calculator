@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import com.deva.ledgercalc.ui.CalculatorScreen
+import com.deva.ledgercalc.ui.LedgerApp
 import com.deva.ledgercalc.ui.TapeViewModel
 import com.deva.ledgercalc.ui.theme.LedgerCalcTheme
 
@@ -23,7 +23,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    CalculatorScreen(viewModel = viewModel)
+                    LedgerApp(viewModel = viewModel)
                 }
             }
         }
