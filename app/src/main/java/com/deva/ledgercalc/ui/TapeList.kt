@@ -11,29 +11,31 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Backspace
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.deva.ledgercalc.domain.Amounts
 import com.deva.ledgercalc.domain.Tape
 import com.deva.ledgercalc.domain.TapeRow
-import java.math.BigDecimal
 
 /**
  * The tape: one line per committed value, operator in a fixed left gutter, amounts right-aligned
  * so the digit columns line up. The total sits under a rule, like a printed slip.
+ *
+ * The gutter and the sign are separate facts. The gutter says what the row does to the total; the
+ * amount carries its own minus so a row that subtracts can never be read as a row that adds.
  */
 @Composable
 fun TapeList(
@@ -94,18 +96,17 @@ fun TapeList(
 
 @Composable
 private fun TapeRowView(row: TapeRow, isEditing: Boolean, onClick: () -> Unit) {
-    val gutter = when {
-        row.operator == null -> if (row.amount.signum() < 0) "−" else " "
-        else -> row.operator.symbol
-    }
     val amountText = Amounts.format(row.amount)
     val negative = row.amount.signum() < 0
-    val body = amountText.removePrefix("-")
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(
+                onClickLabel = "Edit this row",
+                role = Role.Button,
+                onClick = onClick
+            )
             .then(
                 if (isEditing) {
                     Modifier.background(
@@ -120,7 +121,7 @@ private fun TapeRowView(row: TapeRow, isEditing: Boolean, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = gutter,
+            text = row.operator?.symbol ?: " ",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(28.dp)
@@ -138,7 +139,7 @@ private fun TapeRowView(row: TapeRow, isEditing: Boolean, onClick: () -> Unit) {
         Spacer(Modifier.weight(1f))
 
         Text(
-            text = body,
+            text = amountText,
             style = MaterialTheme.typography.bodyLarge,
             color = if (negative) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
         )
@@ -155,12 +156,18 @@ private fun Rule() {
     )
 }
 
-/** Entry line: the number being typed, with the operator that will be applied to it. */
+/**
+ * Entry line: the number being typed, with the operator that will be applied to it.
+ *
+ * A row correction can be left with [onCancelEdit]; without it the only ways out of edit mode were
+ * committing, which is not an escape when the tap that started the edit was a mistake.
+ */
 @Composable
-fun EntryLine(tape: Tape, modifier: Modifier = Modifier) {
+fun EntryLine(tape: Tape, onCancelEdit: () -> Unit, modifier: Modifier = Modifier) {
     val draft = tape.draft
     val text = when {
         draft.isBracketOpen -> draft.bracketText.orEmpty()
+        draft.percent -> draft.digits + "%"
         draft.digits.isEmpty() -> "0"
         else -> draft.digits
     }
@@ -180,7 +187,13 @@ fun EntryLine(tape: Tape, modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.secondary
                 )
-                Spacer(Modifier.width(10.dp))
+                IconButton(onClick = onCancelEdit) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Cancel editing this row",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Text(
                 text = operator?.symbol ?: "",

@@ -302,4 +302,59 @@ class TapeEngineTest {
         assertTrue(!unsealed.sealed)
         assertEquals(1, unsealed.rows.size)
     }
+
+    @Test
+    fun `percent on the starting row is a plain fraction`() {
+        // This used to multiply the value by itself: "50 %" opened the tape at 25.00.
+        val tape = tapeOf("50", "%", "=")
+
+        assertEquals("0.50", Amounts.format(tape.rows[0].amount))
+        assertEquals("0.50", Amounts.format(tape.total))
+    }
+
+    @Test
+    fun `consecutive operators inside a bracket replace each other`() {
+        // MINUS is U+2212, so the replacement guard has to compare against Operator.symbol rather
+        // than the ASCII hyphen; otherwise "(5−×3" reached the parser and closing it failed.
+        val times = tapeOf("(", "5", "-", "*", "3", ")", "=")
+        assertEquals("(5${Operator.TIMES.symbol}3)", times.rows[0].expression)
+        assertEquals("15.00", Amounts.format(times.total))
+
+        // Two minus presses used to parse as "5 − (−3)", which is a different number entirely.
+        val minus = tapeOf("(", "5", "-", "-", "3", ")", "=")
+        assertEquals("(5${Operator.MINUS.symbol}3)", minus.rows[0].expression)
+        assertEquals("2.00", Amounts.format(minus.total))
+    }
+
+    @Test
+    fun `a bracket can resolve to a negative amount on an adding row`() {
+        // The tape used to hide this sign, so the row read "+ 5.00" while the total went down.
+        val tape = tapeOf("100", "+", "(", "0", "-", "5", ")", "=")
+
+        assertEquals(2, tape.rows.size)
+        assertEquals(Operator.PLUS, tape.rows[1].operator)
+        assertTrue(tape.rows[1].amount.signum() < 0)
+        assertEquals("95.00", Amounts.format(tape.total))
+    }
+
+    @Test
+    fun `undo cancels a row correction instead of half-clearing it`() {
+        var tape = tapeOf("200", "+", "300", "=")
+        tape = TapeEngine.editRow(tape, tape.rows[1].id)
+
+        tape = TapeEngine.undo(tape)
+
+        assertNull(tape.draft.editingId)
+        assertEquals(2, tape.rows.size)
+        assertEquals("500.00", Amounts.format(tape.total))
+    }
+
+    @Test
+    fun `a bracket is capped before it can grow past the parser`() {
+        var tape = tapeOf("(")
+        repeat(60) { tape = TapeEngine.digit(tape, '1') }
+
+        assertTrue(tape.draft.bracketText.orEmpty().length <= 40)
+        assertTrue(tape.error != null)
+    }
 }

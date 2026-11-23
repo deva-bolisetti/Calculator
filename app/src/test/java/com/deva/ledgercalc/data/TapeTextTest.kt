@@ -39,7 +39,27 @@ class TapeTextTest {
                 TapeRow(2, Operator.MINUS, BigDecimal("80"))
             )
         )
-        assertTrue(text.contains("= -30.00"))
+        // A negative total must not shift the column: the sign is part of the widest line.
+        val lines = text.trimEnd('\n').lines()
+        // Width comes from the widest line ("-30.00"), so the rows shift right by one column.
+        assertEquals("   50.00", lines[0])
+        assertEquals("= -30.00", lines[3])
+    }
+
+    @Test
+    fun `a negative amount keeps its own sign beside the operator`() {
+        val text = TapeText.render(
+            tape(
+                TapeRow(1, null, BigDecimal("100")),
+                TapeRow(2, Operator.PLUS, BigDecimal("-5"))
+            )
+        )
+        val lines = text.trimEnd('\n').lines()
+
+        // "+  -5.00", not "+   5.00": the row adds a negative, and the tape has to say so.
+        assertEquals("  100.00", lines[0])
+        assertEquals("+  -5.00", lines[1])
+        assertEquals("=  95.00", lines[3])
     }
 
     @Test

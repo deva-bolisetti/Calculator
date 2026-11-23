@@ -13,14 +13,10 @@ android {
         applicationId = "com.deva.ledgercalc"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    testOptions {
-        unitTests.isReturnDefaultValues = true
     }
 
     buildTypes {
@@ -56,5 +52,6 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
 
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

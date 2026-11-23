@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12 and above. Device-to-device transfer carries the ledger across, because the user is
+  moving their own data to their own phone; cloud backup does not, because it would put a
+  financial record in a third-party account that the app never asked permission for.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="ledgercalc.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="sharedpref" path="ledgercalc.xml" />
+    </device-transfer>
+</data-extraction-rules>
