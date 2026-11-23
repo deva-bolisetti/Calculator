@@ -19,10 +19,6 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    testOptions {
-        unitTests.isReturnDefaultValues = true
-    }
-
     buildTypes {
         release {
             optimization {
@@ -56,5 +52,6 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
 
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

@@ -43,19 +43,15 @@ data class Tape(
      * changes when a new tape is started, so a finished tape always maps to one history entry.
      */
     val sessionId: Long = 1L,
-    /** Monotonic counter behind [sessionId]; drawn from the clock so ids stay unique across runs. */
+    /**
+     * Counter behind [sessionId]. It is persisted with the tape and always advances past any id the
+     * tape already knows about, which is what keeps a reopened history entry from colliding with a
+     * newer one.
+     */
     val nextSessionId: Long = 1L
 ) {
     /** Strictly top to bottom: every row acts on the total built by the rows above it. */
     val total: BigDecimal get() = evaluate(rows)
-
-    val isEmpty: Boolean get() = rows.isEmpty() && !draft.hasAmount
-
-    val preview: String
-        get() = when {
-            draft.isBracketOpen -> draft.bracketText.orEmpty()
-            else -> draft.digits
-        }
 
     companion object {
         fun evaluate(rows: List<TapeRow>): BigDecimal {
@@ -71,7 +67,10 @@ data class Tape(
                 null, Operator.PLUS -> Amounts.add(total, amount)
                 Operator.MINUS -> Amounts.subtract(total, amount)
                 Operator.TIMES -> Amounts.multiply(total, amount)
-                Operator.DIVIDE -> Amounts.divide(total, amount)
+                // The keypad rejects a zero divisor, so this can only arrive from damaged stored
+                // data. Treating it as a no-op keeps the rest of the tape readable instead of
+                // throwing from inside composition, which would leave the app in a crash loop.
+                Operator.DIVIDE -> if (Amounts.isZero(amount)) total else Amounts.divide(total, amount)
             }
     }
 }
@@ -86,6 +85,19 @@ object TapeEngine {
 
     private const val MAX_DIGITS = 15
 
+    /**
+     * Ceiling on one tape. Rows are drawn in a non-lazy column and the whole tape is re-serialised
+     * on every key press, so an unbounded tape is a jank button rather than a feature.
+     */
+    private const val MAX_ROWS = 500
+
+    /** Ceiling on a bracket group; [Expression] refuses anything over 120 characters anyway. */
+    private const val MAX_BRACKET = 40
+
+    private const val BRACKET_FULL = "That bracket is full — close it first"
+
+    private val HUNDRED = BigDecimal.valueOf(100)
+
     fun digit(tape: Tape, char: Char): Tape {
         if (!char.isDigit()) return tape
         val start = restartIfSealed(tape)
@@ -97,8 +109,9 @@ object TapeEngine {
         }
 
         if (draft.isBracketOpen) {
-            val text = appendToBracket(draft.bracketText.orEmpty(), char)
-            return start.copy(draft = draft.copy(bracketText = text), error = null)
+            val body = draft.bracketText.orEmpty()
+            if (body.length >= MAX_BRACKET) return start.copy(error = BRACKET_FULL)
+            return start.copy(draft = draft.copy(bracketText = appendToBracket(body, char)), error = null)
         }
 
         val digits = appendDigit(draft.digits, char)
@@ -116,6 +129,7 @@ object TapeEngine {
         }
         if (draft.isBracketOpen) {
             val body = draft.bracketText.orEmpty()
+            if (body.length >= MAX_BRACKET) return start.copy(error = BRACKET_FULL)
             val lastNumber = body.takeLastWhile { it.isDigit() || it == '.' }
             if (lastNumber.contains('.')) return start
             return start.copy(draft = draft.copy(bracketText = body + "."))
@@ -171,7 +185,9 @@ object TapeEngine {
         val start = restartIfSealed(tape)
         val draft = start.draft
         if (draft.isBracketOpen) {
-            return start.copy(draft = draft.copy(bracketText = draft.bracketText.orEmpty() + "("))
+            val body = draft.bracketText.orEmpty()
+            if (body.length >= MAX_BRACKET) return start.copy(error = BRACKET_FULL)
+            return start.copy(draft = draft.copy(bracketText = body + "("), error = null)
         }
         if (draft.hasAmount) return start
         return start.copy(draft = draft.copy(bracketText = "(", digits = "", expression = null, percent = false))
@@ -229,6 +245,9 @@ object TapeEngine {
 
     /** Removes the last committed row, or restores an archived tape when the current one is empty. */
     fun undo(tape: Tape): Tape {
+        // While a row is being corrected, undo means "leave that correction alone". Clearing the
+        // entry line instead would keep the edit half-open and commit it on the next stray key.
+        if (tape.draft.isEditing) return cancelEdit(tape)
         if (tape.draft.hasAmount || tape.draft.isBracketOpen) {
             return tape.copy(draft = tape.draft.copy(digits = "", bracketText = null, expression = null, percent = false))
         }
@@ -307,6 +326,7 @@ object TapeEngine {
     private fun commit(tape: Tape): Tape {
         val draft = tape.draft
         if (!draft.hasAmount) return tape
+        if (tape.rows.size >= MAX_ROWS) return tape.copy(error = "This tape is full — clear it first")
 
         val raw = Amounts.of(draft.digits) ?: return tape.copy(error = "That is not a number")
         val startingRow = tape.rows.isEmpty()
@@ -365,13 +385,16 @@ object TapeEngine {
      * Percent against the running total for + and -, and as a plain fraction otherwise: on a tape
      * of 200 then "+ 10%", the row resolves to 20 so the total reads 220, which is what a receipt
      * tape reader expects. For x and /, 10% means 0.1.
+     *
+     * A percent on the *starting* row has no total to take a share of, so it is the plain fraction
+     * too: "50 %" starts the tape at 0.50. Multiplying the value by itself, as this used to, made
+     * "50%" read 25.00.
      */
     private fun resolvePercent(value: BigDecimal, operator: Operator?, total: BigDecimal): BigDecimal =
-        if (operator == null || operator.isAdditive) {
-            val base = if (operator == null) value else total
-            Amounts.multiply(base, Amounts.divide(value, BigDecimal.valueOf(100)))
-        } else {
-            Amounts.divide(value, BigDecimal.valueOf(100))
+        when {
+            operator == null -> Amounts.divide(value, HUNDRED)
+            operator.isAdditive -> Amounts.multiply(total, Amounts.divide(value, HUNDRED))
+            else -> Amounts.divide(value, HUNDRED)
         }
 
     private fun restartIfSealed(tape: Tape): Tape =
@@ -409,13 +432,15 @@ object TapeEngine {
 
     private fun appendOperatorToBracket(body: String, operator: Operator): String {
         if (body.isEmpty()) return body
-        if (body.last() == '(' || body.last() == '+' || body.last() == '-' ||
-            body.last() == '×' || body.last() == '÷'
-        ) {
-            return body.dropLast(1) + operator.symbol
-        }
+        val last = body.last()
+        // Consecutive operators replace each other, as they do on the tape itself. This has to
+        // compare against Operator.symbol: MINUS is U+2212, not the ASCII hyphen.
+        if (last == '(' || isOperatorSymbol(last)) return body.dropLast(1) + operator.symbol
         return body + operator.symbol
     }
+
+    private fun isOperatorSymbol(char: Char): Boolean =
+        Operator.entries.any { entry -> entry.symbol.length == 1 && entry.symbol[0] == char }
 
     private fun nextIdFor(rows: List<TapeRow>): Long = (rows.maxOfOrNull { it.id } ?: 0L) + 1L
 

@@ -2,14 +2,13 @@ package com.deva.ledgercalc.ui
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import com.deva.ledgercalc.data.TapeRepository
 import com.deva.ledgercalc.data.TapeStore
-import com.deva.ledgercalc.domain.Draft
 import com.deva.ledgercalc.domain.HistoryBook
 import com.deva.ledgercalc.domain.HistoryEntry
 import com.deva.ledgercalc.domain.Operator
 import com.deva.ledgercalc.domain.Tape
 import com.deva.ledgercalc.domain.TapeEngine
-import com.deva.ledgercalc.domain.TapeRow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,7 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class TapeViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val store = TapeStore(application)
+    private val store: TapeRepository = TapeStore(application)
 
     private val _tape = MutableStateFlow(store.load())
     val tape: StateFlow<Tape> = _tape.asStateFlow()
@@ -40,34 +39,17 @@ class TapeViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * History always agrees with the tape it describes.
      *
-     * A tape lands in history when it is sealed with "=", and is recorded by session id so editing
-     * it or pressing "=" again updates one line instead of piling up duplicates. Undoing back past
-     * the "=" rewrites that line to the shorter tape, and undoing every row away removes it, so an
-     * entry can never claim a total the tape no longer has. Clear starts a new session, which
-     * leaves the finished tape's entry alone.
+     * The rules themselves live in [HistoryBook.reconcile], which is pure and therefore testable
+     * without Android; this only persists the result.
      */
     private fun syncHistory(previous: Tape, next: Tape) {
-        val recorded = _history.value.find { it.id == next.sessionId }
-
-        if (next.rows.isEmpty()) {
-            if (recorded != null) dropHistory(next.sessionId)
-            return
-        }
-
-        if (next.sealed) {
-            if (previous.sealed && previous.rows == next.rows) return
-            remember(next.sessionId, next.rows, System.currentTimeMillis())
-            return
-        }
-
-        // Not sealed: only keep an existing entry honest, never add a half-finished tape.
-        if (recorded == null || recorded.rows == next.rows) return
-        remember(next.sessionId, next.rows, recorded.savedAt)
-    }
-
-    private fun remember(sessionId: Long, rows: List<TapeRow>, savedAt: Long) {
-        val entry = HistoryEntry(id = sessionId, rows = rows, savedAt = savedAt)
-        val updated = HistoryBook.upsert(_history.value, entry)
+        val updated = HistoryBook.reconcile(
+            entries = _history.value,
+            previous = previous,
+            next = next,
+            now = System.currentTimeMillis()
+        )
+        if (updated == _history.value) return
         _history.value = updated
         store.saveHistory(updated)
     }
@@ -96,12 +78,8 @@ class TapeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelEdit() = update { TapeEngine.cancelEdit(it) }
 
-    /** The tape restored by an undo after Clear, used to drive the snackbar's undo action. */
-    fun canUndoClear(): Boolean = _tape.value.rows.isEmpty() && _tape.value.archived != null
-
+    /** Dismisses the inline error, which otherwise stays until the next key press. */
     fun dismissError() = update { it.copy(error = null) }
-
-    fun emptyDraft(): Draft = Draft()
 
     // --- history -----------------------------------------------------------------------------
 
@@ -115,6 +93,14 @@ class TapeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteHistory(id: Long) = dropHistory(id)
+
+    /** Puts back an entry the user just deleted, so the delete can be undone. */
+    fun restoreHistory(entry: HistoryEntry) {
+        val updated = HistoryBook.upsert(_history.value, entry)
+        if (updated == _history.value) return
+        _history.value = updated
+        store.saveHistory(updated)
+    }
 
     private fun dropHistory(id: Long) {
         val updated = HistoryBook.remove(_history.value, id)

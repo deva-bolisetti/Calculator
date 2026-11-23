@@ -1,8 +1,11 @@
 package com.deva.ledgercalc.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -21,6 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -51,11 +55,16 @@ fun CalculatorScreen(viewModel: TapeViewModel, onAbout: () -> Unit = {}) {
     val scrollState = rememberScrollState()
 
     // The newest row and the total are the whole point of the tape, so keep them in view. Waiting
-    // a frame lets layout settle first, otherwise maxValue is the previous, shorter value.
-    LaunchedEffect(tape.rows.size, tape.preview) {
+    // a frame lets layout settle first, otherwise maxValue is the previous, shorter value. Keying
+    // this on the committed row count rather than on the typed digits means reading an earlier row
+    // is not interrupted by every keystroke.
+    LaunchedEffect(tape.rows.size) {
         withFrameNanos { }
         scrollState.animateScrollTo(scrollState.maxValue)
     }
+
+    // Back while a row is being corrected means "never mind", not "leave the app".
+    BackHandler(enabled = tape.draft.isEditing) { viewModel.cancelEdit() }
 
     // The tab shell owns the outer layout, so this screen is a plain column with its own toolbar
     // rather than a nested Scaffold, which would apply the system insets twice.
@@ -79,13 +88,25 @@ fun CalculatorScreen(viewModel: TapeViewModel, onAbout: () -> Unit = {}) {
                     Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear tape")
                 }
                 IconButton(
-                    onClick = { ExportManager.shareText(context, tape) },
+                    onClick = {
+                        if (!ExportManager.shareText(context, tape)) {
+                            scope.launch { snackbar.showSnackbar("There is no tape to share yet") }
+                        }
+                    },
                     enabled = tape.rows.isNotEmpty()
                 ) {
                     Icon(Icons.Filled.Share, contentDescription = "Share as text")
                 }
                 IconButton(
-                    onClick = { ExportManager.sharePdf(context, tape) },
+                    onClick = {
+                        // Copy the tape first: the export outlives this frame.
+                        val snapshot = tape
+                        scope.launch {
+                            if (!ExportManager.sharePdf(context, snapshot)) {
+                                snackbar.showSnackbar("Could not create the PDF")
+                            }
+                        }
+                    },
                     enabled = tape.rows.isNotEmpty()
                 ) {
                     Icon(Icons.Filled.PictureAsPdf, contentDescription = "Share as PDF")
@@ -112,18 +133,25 @@ fun CalculatorScreen(viewModel: TapeViewModel, onAbout: () -> Unit = {}) {
             )
         }
 
-        EntryLine(tape = tape)
+        EntryLine(tape = tape, onCancelEdit = viewModel::cancelEdit)
 
         tape.error?.let { message ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(onClick = viewModel::dismissError)
                     .padding(horizontal = 20.dp, vertical = 6.dp)
             ) {
                 Text(
                     text = message,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.error
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "Dismiss",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -144,12 +172,19 @@ fun CalculatorScreen(viewModel: TapeViewModel, onAbout: () -> Unit = {}) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Clear the tape?") },
-            text = { Text("Every row will be removed. You can undo this once with the undo button.") },
+            text = { Text("Every row will be removed. You can undo this once, from the snackbar or the undo button.") },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.clear()
                     confirmClear = false
-                    scope.launch { snackbar.showSnackbar("Tape cleared") }
+                    scope.launch {
+                        val result = snackbar.showSnackbar(
+                            message = "Tape cleared",
+                            actionLabel = "Undo",
+                            withDismissAction = true
+                        )
+                        if (result == SnackbarResult.ActionPerformed) viewModel.undo()
+                    }
                 }) { Text("Clear") }
             },
             dismissButton = {

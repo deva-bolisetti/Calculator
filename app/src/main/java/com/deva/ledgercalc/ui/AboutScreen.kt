@@ -232,18 +232,20 @@ private fun VersionRow(label: String, value: String) {
 /**
  * Hands the address to a mail app. The version is prefilled in the body because a bug report is
  * far easier to act on when the build it came from is already written down.
+ *
+ * The subject and body go in the `mailto:` URI rather than in EXTRA_SUBJECT/EXTRA_TEXT: address-only
+ * SENDTO intents are the one form clients reliably understand, and most of them ignore the extras.
  */
 private fun sendEmail(context: Context, version: AppVersion): Boolean {
-    val intent = Intent(Intent.ACTION_SENDTO).apply {
-        data = Uri.parse("mailto:$CONTACT_EMAIL")
-        putExtra(Intent.EXTRA_SUBJECT, "LedgerCalc feedback")
-        putExtra(
-            Intent.EXTRA_TEXT,
-            "\n\n---\nApp: LedgerCalc ${version.name} (build ${version.code})\n" +
-                "Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, " +
-                "Android ${android.os.Build.VERSION.RELEASE}"
-        )
-    }
+    val body = "\n\n---\nApp: LedgerCalc ${version.name} (build ${version.code})\n" +
+        "Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, " +
+        "Android ${android.os.Build.VERSION.RELEASE}"
+    val uri = Uri.parse(
+        "mailto:$CONTACT_EMAIL" +
+            "?subject=${Uri.encode("LedgerCalc feedback")}" +
+            "&body=${Uri.encode(body)}"
+    )
+    val intent = Intent(Intent.ACTION_SENDTO).apply { data = uri }
     return try {
         context.startActivity(intent)
         true

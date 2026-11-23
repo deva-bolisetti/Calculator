@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 and below: keep the ledger out of cloud backups. The tape and its history are
+  financial records, and there is no in-app consent for uploading them. Moving to a new phone is
+  served by device-transfer (data_extraction_rules.xml) or by exporting the tape.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="ledgercalc.xml" />
+</full-backup-content>

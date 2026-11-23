@@ -73,7 +73,8 @@ fun LedgerApp(viewModel: TapeViewModel) {
                         viewModel.openFromHistory(id)
                         tab = Tab.CALCULATOR
                     },
-                    onDelete = viewModel::deleteHistory
+                    onDelete = viewModel::deleteHistory,
+                    onRestore = viewModel::restoreHistory
                 )
             }
         }

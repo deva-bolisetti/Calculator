@@ -1,7 +1,7 @@
 package com.deva.ledgercalc.data
 
-import android.content.Context
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import com.deva.ledgercalc.domain.Amounts
 import com.deva.ledgercalc.domain.Tape
@@ -9,8 +9,11 @@ import java.io.File
 
 /**
  * Writes the tape to a PDF using the platform's [PdfDocument], so the feature costs no extra
- * dependency. The layout mirrors the on-screen tape: operator gutter, right-aligned amounts,
- * a rule, then the total.
+ * dependency. The layout mirrors the on-screen tape: operator gutter, right-aligned amounts, a
+ * rule, then the total.
+ *
+ * The gutter carries the operator and the amount carries its own sign, as in [TapeText]: a row
+ * that subtracts must not read like a row that adds.
  */
 object TapePdf {
 
@@ -19,78 +22,106 @@ object TapePdf {
     private const val MARGIN = 48f
     private const val ROW_HEIGHT = 22f
 
-    fun write(context: Context, tape: Tape, file: File) {
+    /** Space kept free at the bottom of every page for the page number. */
+    private const val FOOTER_SPACE = 32f
+
+    /** Space the rule and the total need, reserved before the last row is placed on a page. */
+    private const val TOTAL_BLOCK = 4f + ROW_HEIGHT + 8f
+
+    fun write(tape: Tape, file: File) {
         val document = PdfDocument()
-        val amountPaint = Paint().apply {
-            textSize = 13f
-            isAntiAlias = true
-            typeface = android.graphics.Typeface.MONOSPACE
+        val amountPaint = paint(13f, Typeface.MONOSPACE)
+        val expressionPaint = paint(11f, Typeface.MONOSPACE)
+        val footerPaint = paint(9f, Typeface.MONOSPACE).apply {
+            color = 0xFF666666.toInt()
         }
-        val titlePaint = Paint().apply {
-            textSize = 18f
-            isAntiAlias = true
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
-        }
+        val titlePaint = paint(
+            18f,
+            Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        )
         val rulePaint = Paint().apply {
             strokeWidth = 1f
             isAntiAlias = true
         }
 
-        val rows = tape.rows
-        val amounts = rows.map { Amounts.format(it.amount) }
-        val totalText = Amounts.format(tape.total)
-        val columnRight = PAGE_WIDTH - MARGIN
-        val amountWidth = amountPaint.measureText(
-            (amounts + totalText).maxOfOrNull { it.length }?.let { "0".repeat(it) } ?: "0"
-        )
-        val amountLeft = columnRight - amountWidth
+        try {
+            val rows = tape.rows
+            val amounts = rows.map { Amounts.format(it.amount) }
+            val totalText = Amounts.format(tape.total)
+            val columnRight = PAGE_WIDTH - MARGIN
+            val widest = (amounts + totalText).maxOfOrNull { it.length } ?: 0
+            val amountLeft = columnRight - amountPaint.measureText("0".repeat(widest.coerceAtLeast(1)))
+            val contentBottom = PAGE_HEIGHT - MARGIN - FOOTER_SPACE
+            val rowLimit = contentBottom - TOTAL_BLOCK
 
-        var index = 0
-        var pageNumber = 1
-        while (index < rows.size || pageNumber == 1) {
-            val page = document.startPage(
-                PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, pageNumber).create()
-            )
-            val canvas = page.canvas
-            var y = MARGIN + 20f
+            var index = 0
+            var pageNumber = 1
+            while (index < rows.size || pageNumber == 1) {
+                val page = document.startPage(
+                    PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, pageNumber).create()
+                )
+                val canvas = page.canvas
+                var y = MARGIN + 20f
 
-            if (pageNumber == 1) {
-                canvas.drawText("LedgerCalc", MARGIN, y, titlePaint)
+                val heading = if (pageNumber == 1) "LedgerCalc" else "LedgerCalc (continued)"
+                canvas.drawText(heading, MARGIN, y, titlePaint)
                 y += 28f
-            }
 
-            while (index < rows.size && y < PAGE_HEIGHT - MARGIN - ROW_HEIGHT) {
-                val row = rows[index]
-                val sign = if (index == 0) {
-                    if (row.amount.signum() < 0) "-" else " "
-                } else {
-                    row.operator?.symbol ?: "+"
+                while (index < rows.size && y <= rowLimit) {
+                    val row = rows[index]
+                    canvas.drawText(row.operator?.symbol ?: "", MARGIN, y, amountPaint)
+                    val amount = amounts[index]
+                    canvas.drawText(amount, columnRight - amountPaint.measureText(amount), y, amountPaint)
+
+                    val expression = row.expression
+                    if (expression != null) {
+                        // Never let a long grouping run into the amount column.
+                        val room = amountLeft - 8f - (MARGIN + 24f)
+                        if (room > 0f && expressionPaint.measureText(expression) <= room) {
+                            canvas.drawText(expression, MARGIN + 24f, y, expressionPaint)
+                        }
+                    }
+
+                    y += ROW_HEIGHT
+                    index++
                 }
-                val body = amounts[index].removePrefix("-")
-                canvas.drawText(sign, MARGIN, y, amountPaint)
-                canvas.drawText(body, columnRight - amountPaint.measureText(body), y, amountPaint)
-                if (row.expression != null) {
-                    canvas.drawText(row.expression.orEmpty(), MARGIN + 24f, y, amountPaint)
+
+                if (index >= rows.size) {
+                    y += 4f
+                    canvas.drawLine(amountLeft, y, columnRight, y, rulePaint)
+                    y += ROW_HEIGHT
+                    canvas.drawText("=", MARGIN, y, amountPaint)
+                    canvas.drawText(
+                        totalText,
+                        columnRight - amountPaint.measureText(totalText),
+                        y,
+                        amountPaint
+                    )
                 }
-                y += ROW_HEIGHT
-                index++
+
+                // A multi-page export is only re-checkable if the pages can be told apart.
+                val footer = "Page $pageNumber"
+                canvas.drawText(
+                    footer,
+                    columnRight - footerPaint.measureText(footer),
+                    PAGE_HEIGHT - 28f,
+                    footerPaint
+                )
+
+                document.finishPage(page)
+                pageNumber++
             }
 
-            if (index >= rows.size) {
-                y += 4f
-                canvas.drawLine(amountLeft, y, columnRight, y, rulePaint)
-                y += ROW_HEIGHT
-                val totalBody = totalText.removePrefix("-")
-                val sign = if (totalText.startsWith("-")) "-" else "="
-                canvas.drawText(sign, MARGIN, y, amountPaint)
-                canvas.drawText(totalBody, columnRight - amountPaint.measureText(totalBody), y, amountPaint)
-            }
-
-            document.finishPage(page)
-            pageNumber++
+            file.outputStream().use { document.writeTo(it) }
+        } finally {
+            // Without this the native document leaks whenever writing the file fails.
+            document.close()
         }
+    }
 
-        file.outputStream().use { document.writeTo(it) }
-        document.close()
+    private fun paint(size: Float, typeface: Typeface): Paint = Paint().apply {
+        textSize = size
+        isAntiAlias = true
+        this.typeface = typeface
     }
 }
