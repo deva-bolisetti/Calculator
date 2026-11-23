@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -74,6 +75,9 @@ fun CalculatorScreen(viewModel: TapeViewModel, onAbout: () -> Unit = {}) {
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = MaterialTheme.colorScheme.background
             ),
+            // The tab shell's Scaffold already consumed the status bar inset, so the default
+            // TopAppBar inset would push the bar down by a second status bar height.
+            windowInsets = WindowInsets(0),
             actions = {
                 IconButton(
                     onClick = { viewModel.undo() },
